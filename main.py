@@ -40,7 +40,7 @@ save_interval = params.get("save_interval", 10)
 # Grid setup - Centered black hole
 # -------------------------
 r_min_grid = 0.1  # Small positive value to avoid r=0
-r = np.linspace(r_min_grid, R_max, N_r)
+r = np.linspace(-R_max, R_max, N_r)
 z = np.linspace(-Z_max, Z_max, N_z)
 
 dr, dz = r[1] - r[0], z[1] - z[0]
@@ -298,7 +298,7 @@ if __name__ == "__main__":
     print("HYDRODYNAMIC BLACK HOLE ACCRETION SIMULATION")
     print("="*60)
     print(f"Grid: {N_r} × {N_z}")
-    print(f"Domain: r ∈ [0, {R_max}], z ∈ [{-Z_max}, {Z_max}]")
+    print(f"Domain: r ∈ [{-R_max}, {R_max}], z ∈ [{-Z_max}, {Z_max}]")
     print(f"Bondi radius: {R_bondi:.3f}")
     print(f"Black hole mass: {BH_mass}")
     print(f"CFL number: {CFL}")
