@@ -1,146 +1,370 @@
-# save.py - Enhanced with better visualization and debugging
+
 import matplotlib.pyplot as plt
 import numpy as np
 import os
+from matplotlib.colors import LogNorm
+import matplotlib.patches as patches
+
 
 # Save inside your project "figures" folder
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "figures")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+def plot_astrophysical_contours(field, R, Z, title="Field", filename="field.png", 
+                               log_scale=True, levels=20, show_black_hole=True, 
+                               show_marginally_stable=True, cmap="plasma"):
+    """
+    Create contour plots similar to those in astrophysics papers - works with full domain data
+    """
+    # Clean the data
+    field_clean = np.copy(field)
+    
+    # Handle infinities and NaNs
+    mask_bad = ~np.isfinite(field_clean)
+    if np.any(mask_bad):
+        field_clean[mask_bad] = np.nanmin(field_clean[~mask_bad]) if np.any(~mask_bad) else 1e-20
+        print(f"Warning: {np.sum(mask_bad)} bad values in {title}")
+    
+    # Ensure positive values for log scale
+    if log_scale:
+        field_clean = np.maximum(field_clean, 1e-20)
+    
+    # Statistics
+    field_min, field_max = np.min(field_clean), np.max(field_clean)
+    field_mean = np.mean(field_clean)
+    
+    print(f"{title} stats: min={field_min:.2e}, max={field_max:.2e}, mean={field_mean:.2e}")
+    
+    # --- Create the plot using existing full domain data ---
+    fig, ax = plt.subplots(1, 1, figsize=(12, 12))  # Square plot for full view
+    
+    # Create contour levels
+    if log_scale and field_min > 0:
+        # Logarithmic levels
+        log_min = np.log10(field_min)
+        log_max = np.log10(field_max)
+       # if log_max - log_min > 6:  # If range is too large, limit it
+        #    log_min = log_max - 6
+        contour_levels = np.logspace(log_min, log_max, levels)
+        norm = LogNorm(vmin=field_min, vmax=field_max)
+    else:
+        # Linear levels
+        contour_levels = np.linspace(field_min, field_max, levels)
+        norm = None
+    
+    # Main contour plot (filled) - use existing full domain data
+    if norm:
+        cs_filled = ax.contourf(R, Z, field_clean, levels=contour_levels, 
+                               cmap=cmap, norm=norm, extend='both')
+    else:
+        cs_filled = ax.contourf(R, Z, field_clean, levels=contour_levels, 
+                               cmap=cmap, extend='both')
+    
+    # Contour lines (like in the paper)
+    cs_lines = ax.contour(R, Z, field_clean, levels=contour_levels[::2], 
+                         colors='black', alpha=0.4, linewidths=0.5)
+    
+    # Add colorbar
+    cbar = plt.colorbar(cs_filled, ax=ax, shrink=0.8, pad=0.02)
+    cbar.set_label(title, rotation=270, labelpad=20, fontsize=12)
+    
+    # Mark important astrophysical features
+    if show_black_hole:
+        # Black hole at origin (r=1 in Schwarzschild units)
+        bh_circle = patches.Circle((0, 0), 1.0, color='black', fill=True, 
+                                  zorder=10, label='Black Hole')
+        ax.add_patch(bh_circle)
+    
+    if show_marginally_stable:
+        # Marginally stable orbit at r=3
+        ms_circle = patches.Circle((0, 0), 3.0, color='white', fill=False, 
+                                  linestyle='--', linewidth=2, alpha=0.8, 
+                                  zorder=9, label='Marginally Stable Orbit')
+        ax.add_patch(ms_circle)
+    
+    # Add equatorial plane and rotation axis lines
+    r_max_plot = np.max(np.abs(R))
+    z_max_plot = np.max(np.abs(Z))
+    ax.axhline(y=0, color='white', linestyle=':', alpha=0.5, linewidth=1, label='Equatorial Plane')
+    ax.axvline(x=0, color='white', linestyle=':', alpha=0.5, linewidth=1, label='Rotation Axis')
+    
+    # Formatting similar to research papers
+    ax.set_xlabel('R (Schwarzschild radii)', fontsize=12)
+    ax.set_ylabel('Z (Schwarzschild radii)', fontsize=12)
+    ax.set_title(title, fontsize=14, pad=20)
+    ax.set_aspect('equal')
+    
+    # Add grid for better readability
+    ax.grid(True, alpha=0.3, linestyle=':', linewidth=0.5)
+    
+    # Use the actual domain limits from your simulation
+    ax.set_xlim(np.min(R), np.max(R))
+    ax.set_ylim(np.min(Z), np.max(Z))
+    
+    # Add legend if astrophysical features are shown
+    if show_black_hole or show_marginally_stable:
+        ax.legend(loc='upper right', fontsize=10, framealpha=0.8)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, filename), dpi=200, bbox_inches='tight')
+    plt.close()
+    
+    # Save CSV data
+    csv_filename = os.path.splitext(filename)[0] + ".csv"
+    csv_path = os.path.join(OUTPUT_DIR, csv_filename)
+    
+    r_vals = R[:, 0] if R.shape[1] > 1 else R.flatten()
+    z_vals = Z[0, :] if Z.shape[0] > 1 else Z.flatten()
+    
+    with open(csv_path, "w") as f:
+        f.write("r/z," + ",".join(map(str, z_vals)) + "\n")
+        for i, r_val in enumerate(r_vals):
+            if i < field_clean.shape[0]:
+                row = [str(r_val)] + [str(field_clean[i, j]) for j in range(min(len(z_vals), field_clean.shape[1]))]
+                f.write(",".join(row) + "\n")
+    
+    # Save CSV data
+    csv_filename = os.path.splitext(filename)[0] + ".csv"
+    csv_path = os.path.join(OUTPUT_DIR, csv_filename)
+    
+    r_vals = R[:, 0] if R.shape[1] > 1 else R.flatten()
+    z_vals = Z[0, :] if Z.shape[0] > 1 else Z.flatten()
+    
+    with open(csv_path, "w") as f:
+        f.write("r/z," + ",".join(map(str, z_vals)) + "\n")
+        for i, r_val in enumerate(r_vals):
+            if i < field_clean.shape[0]:
+                row = [str(r_val)] + [str(field_clean[i, j]) for j in range(min(len(z_vals), field_clean.shape[1]))]
+                f.write(",".join(row) + "\n")
 
 def plot_field_enhanced(field, R, Z, title="Field", cmap="inferno", filename="field.png", 
                        log_scale=False, vmin=None, vmax=None, show_contours=False):
     """
     Enhanced plotting with better handling of extreme values and debugging info
     """
-    # --- Data analysis and cleaning ---
-    field_clean = np.copy(field)
+    # Use the new astrophysical contour function
+    plot_astrophysical_contours(field, R, Z, title=title, filename=filename, 
+                               log_scale=log_scale, cmap=cmap)
+
+def plot_comparative_contours(fields_dict, R, Z, filename="comparative_fields.png"):
+    """
+    Create a multi-panel figure comparing different fields - works with existing full domain data
+    """
+    n_fields = len(fields_dict)
+    if n_fields == 0:
+        return
     
-    # Handle infinities and NaNs
-    mask_bad = ~np.isfinite(field_clean)
-    if np.any(mask_bad):
-        field_clean[mask_bad] = np.nanmin(field_clean[~mask_bad]) if np.any(~mask_bad) else 0.0
-        print(f"Warning: {np.sum(mask_bad)} bad values in {title}")
-    
-    # Statistics
-    field_min, field_max = np.min(field_clean), np.max(field_clean)
-    field_mean, field_std = np.mean(field_clean), np.std(field_clean)
-    
-    print(f"{title} stats: min={field_min:.2e}, max={field_max:.2e}, mean={field_mean:.2e}, std={field_std:.2e}")
-    
-    # --- Plotting with better ranges ---
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
-    
-    # Left plot: Linear scale with clipped range
-    if vmin is None or vmax is None:
-        # Use percentile-based clipping to avoid extreme outliers
-        p1, p99 = np.percentile(field_clean, [1, 99])
-        if vmin is None:
-            vmin = max(p1, field_min) if field_min > 0 else p1
-        if vmax is None:
-            vmax = min(p99, field_max) if p99 < field_max * 0.1 else field_max
-    
-    # Clip field for visualization
-    field_plot = np.clip(field_clean, vmin, vmax)
-    
-    im1 = ax1.pcolormesh(R, Z, field_plot, shading="auto", cmap=cmap, vmin=vmin, vmax=vmax)
-    ax1.set_xlabel("r")
-    ax1.set_ylabel("z")
-    ax1.set_title(f"{title} (Linear, clipped)")
-    ax1.set_aspect('equal')
-    plt.colorbar(im1, ax=ax1)
-    
-    if show_contours:
-        contour_levels = np.linspace(vmin, vmax, 10)
-        ax1.contour(R, Z, field_plot, levels=contour_levels, colors='white', alpha=0.3, linewidths=0.5)
-    
-    # Right plot: Log scale (if requested and field is positive)
-    if log_scale and np.all(field_clean > 0):
-        field_log = np.log10(np.maximum(field_clean, 1e-20))
-        im2 = ax2.pcolormesh(R, Z, field_log, shading="auto", cmap=cmap)
-        ax2.set_title(f"{title} (Log₁₀)")
-        plt.colorbar(im2, ax=ax2, label=f"log₁₀({title})")
+    # Determine subplot layout
+    if n_fields <= 2:
+        rows, cols = 1, n_fields
+        figsize = (10 * n_fields, 8)
+    elif n_fields <= 4:
+        rows, cols = 2, 2
+        figsize = (16, 16)
+    elif n_fields <= 6:
+        rows, cols = 2, 3
+        figsize = (24, 16)
     else:
-        # Show difference from mean for better structure visualization
-        field_diff = field_clean - field_mean
-        im2 = ax2.pcolormesh(R, Z, field_diff, shading="auto", cmap="RdBu_r")
-        ax2.set_title(f"{title} (Deviation from mean)")
-        plt.colorbar(im2, ax=ax2, label=f"Δ{title}")
+        rows, cols = 3, 3
+        figsize = (24, 24)
     
-    ax2.set_xlabel("r")
-    ax2.set_ylabel("z")
-    ax2.set_aspect('equal')
+    fig, axes = plt.subplots(rows, cols, figsize=figsize)
+    if n_fields == 1:
+        axes = [axes]
+    elif rows == 1 or cols == 1:
+        axes = axes.flatten() if hasattr(axes, 'flatten') else [axes]
+    else:
+        axes = axes.flatten()
+    
+    # Color maps for different physical quantities
+    cmaps = {
+        'density': 'plasma',
+        'pressure': 'viridis', 
+        'temperature': 'hot',
+        'energy': 'inferno',
+        'velocity': 'RdBu_r',
+        'mach': 'coolwarm'
+    }
+    
+    for idx, (field_name, field_data) in enumerate(fields_dict.items()):
+        if idx >= len(axes):
+            break
+            
+        ax = axes[idx]
+        
+        # Clean data
+        field_clean = np.copy(field_data)
+        field_clean[~np.isfinite(field_clean)] = np.nanmin(field_clean[np.isfinite(field_clean)])
+        
+        # Choose appropriate colormap
+        cmap = 'plasma'  # default
+        for key, color in cmaps.items():
+            if key.lower() in field_name.lower():
+                cmap = color
+                break
+        
+        # Determine if log scale is appropriate
+        log_scale = (np.min(field_clean) > 0 and 
+                    np.max(field_clean) / np.min(field_clean) > 100)
+        
+        if log_scale:
+            field_clean = np.maximum(field_clean, 1e-20)
+            norm = LogNorm(vmin=np.min(field_clean), vmax=np.max(field_clean))
+        else:
+            norm = None
+        
+        # Create contour plot using existing full domain data
+        levels = 15
+        if log_scale:
+            log_min, log_max = np.log10(np.min(field_clean)), np.log10(np.max(field_clean))
+            contour_levels = np.logspace(log_min, log_max, levels)
+        else:
+            contour_levels = np.linspace(np.min(field_clean), np.max(field_clean), levels)
+        
+        cs = ax.contourf(R, Z, field_clean, levels=contour_levels, 
+                        cmap=cmap, norm=norm, extend='both')
+        ax.contour(R, Z, field_clean, levels=contour_levels[::2], 
+                  colors='black', alpha=0.3, linewidths=0.5)
+        
+        # Add black hole and marginally stable orbit
+        bh_circle = patches.Circle((0, 0), 1.0, color='black', fill=True, zorder=10)
+        ms_circle = patches.Circle((0, 0), 3.0, color='white', fill=False, 
+                                  linestyle='--', linewidth=1.5, alpha=0.7, zorder=9)
+        ax.add_patch(bh_circle)
+        ax.add_patch(ms_circle)
+        
+        # Add reference lines
+        ax.axhline(y=0, color='white', linestyle=':', alpha=0.3, linewidth=1)
+        ax.axvline(x=0, color='white', linestyle=':', alpha=0.3, linewidth=1)
+        
+        # Formatting
+        ax.set_xlabel('R (r_g)')
+        ax.set_ylabel('Z (r_g)')
+        ax.set_title(field_name)
+        ax.set_aspect('equal')
+        
+        # Use actual domain limits from your simulation
+        ax.set_xlim(np.min(R), np.max(R))
+        ax.set_ylim(np.min(Z), np.max(Z))
+        
+        # Add colorbar
+        cbar = plt.colorbar(cs, ax=ax, shrink=0.6)
+        if log_scale:
+            cbar.set_label(f'log({field_name})', rotation=270, labelpad=15)
+        else:
+            cbar.set_label(field_name, rotation=270, labelpad=15)
+    
+    # Hide unused subplots
+    for idx in range(len(fields_dict), len(axes)):
+        axes[idx].set_visible(False)
     
     plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR, filename), dpi=150, bbox_inches='tight')
+    plt.savefig(os.path.join(OUTPUT_DIR, filename), dpi=200, bbox_inches='tight')
     plt.close()
 
-    # --- CSV saving (same as before) ---
-    csv_filename = os.path.splitext(filename)[0] + ".csv"
-    csv_path = os.path.join(OUTPUT_DIR, csv_filename)
 
-    r_vals = R[:, 0]  # First column of R
-    z_vals = Z[0, :]  # First row of Z
 
-    with open(csv_path, "w") as f:
-        # Write header
-        f.write("r/z," + ",".join(map(str, z_vals)) + "\n")
-        # Write data rows
-        for i, r_val in enumerate(r_vals):
-            row = [str(r_val)] + [str(field[i, j]) for j in range(len(z_vals))]
-            f.write(",".join(row) + "\n")
-
-def plot_vector_field(vr, vz, R, Z, title="Velocity Field", filename="velocity_field.png", 
-                     subsample=4, scale=1.0):
+def save_all_enhanced(rho, p, e_total, vr, vz, vphi, R, Z, step=0):
     """
-    Plot vector field with streamlines
+    Enhanced saving with astrophysical contour plots similar to research papers
     """
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    print(f"\n--- Saving astrophysical data for step {step} ---")
     
-    # Vector magnitude
-    v_mag = np.sqrt(vr**2 + vz**2)
+    # --- Basic thermodynamic quantities (like Figures 2-4 in paper) ---
+    plot_astrophysical_contours(rho, R, Z, title="Density", 
+                               filename=f"density_{step:05d}.png", 
+                               log_scale=True, cmap="plasma")
     
-    # Left: Quiver plot (subsampled for clarity)
-    R_sub = R[::subsample, ::subsample]
-    Z_sub = Z[::subsample, ::subsample]
-    vr_sub = vr[::subsample, ::subsample]
-    vz_sub = vz[::subsample, ::subsample]
-    v_mag_sub = v_mag[::subsample, ::subsample]
+    plot_astrophysical_contours(p, R, Z, title="Pressure", 
+                               filename=f"pressure_{step:05d}.png", 
+                               log_scale=True, cmap="viridis")
     
-    im1 = ax1.pcolormesh(R, Z, v_mag, shading="auto", cmap="plasma", alpha=0.7)
-    q = ax1.quiver(R_sub, Z_sub, vr_sub, vz_sub, v_mag_sub, 
-                   scale=scale, cmap="plasma", alpha=0.8)
-    ax1.set_xlabel("r")
-    ax1.set_ylabel("z")
-    ax1.set_title(f"{title} (Vectors)")
-    ax1.set_aspect('equal')
-    plt.colorbar(im1, ax=ax1, label="Velocity Magnitude")
+    plot_astrophysical_contours(e_total, R, Z, title="Total Energy", 
+                               filename=f"energy_{step:05d}.png", 
+                               log_scale=True, cmap="inferno")
     
-    # Right: Streamlines
-    try:
-        ax2.streamplot(R, Z, vr, vz, density=1.5, color=v_mag, cmap="plasma", 
-                      linewidth=1.5, arrowsize=1.2)
-        im2 = ax2.pcolormesh(R, Z, v_mag, shading="auto", cmap="plasma", alpha=0.3)
-        ax2.set_xlabel("r")
-        ax2.set_ylabel("z")
-        ax2.set_title(f"{title} (Streamlines)")
-        ax2.set_aspect('equal')
-        plt.colorbar(im2, ax=ax2, label="Velocity Magnitude")
-    except:
-        # Fallback if streamplot fails
-        im2 = ax2.pcolormesh(R, Z, v_mag, shading="auto", cmap="plasma")
-        ax2.set_xlabel("r")
-        ax2.set_ylabel("z")
-        ax2.set_title(f"{title} (Magnitude)")
-        ax2.set_aspect('equal')
-        plt.colorbar(im2, ax=ax2, label="Velocity Magnitude")
+    # --- Temperature (like Figure 2b, 4, 7b, 9 in paper) ---
+    T = p / (rho + 1e-20)  # Temperature in code units
+    plot_astrophysical_contours(T, R, Z, title="Temperature (keV)", 
+                               filename=f"temperature_{step:05d}.png", 
+                               log_scale=True, cmap="hot")
     
-    plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR, filename), dpi=150, bbox_inches='tight')
-    plt.close()
+    # --- Velocity components ---
+    plot_astrophysical_contours(vr, R, Z, title="Radial Velocity", 
+                               filename=f"vr_{step:05d}.png", 
+                               log_scale=False, cmap="RdBu_r")
+    
+    plot_astrophysical_contours(vz, R, Z, title="Vertical Velocity", 
+                               filename=f"vz_{step:05d}.png", 
+                               log_scale=False, cmap="RdBu_r")
+    v_mag = np.sqrt(vr**2 + vz**2 + vphi**2)
+    plot_astrophysical_contours(v_mag, R, Z, title="Vertical Velocity", 
+                               filename=f"vmag_{step:05d}.png", 
+                               log_scale=False, cmap="RdBu_r")
+    
+    
+    if np.any(np.abs(vphi) > 1e-10):
+        plot_astrophysical_contours(vphi, R, Z, title="Azimuthal Velocity", 
+                                   filename=f"vphi_{step:05d}.png", 
+                                   log_scale=False, cmap="RdBu_r")
+    
+    # --- Vector field visualization ---
+   
+    
+    # --- Derived astrophysical quantities ---
+    cs = np.sqrt(np.maximum(5.0/3.0 * p / (rho + 1e-20), 1e-20))  # Sound speed
+    mach_r = np.abs(vr) / cs  # Radial Mach number
+    
+    plot_astrophysical_contours(cs, R, Z, title="Sound Speed", 
+                               filename=f"sound_speed_{step:05d}.png", 
+                               log_scale=True, cmap="cool")
+    
+    plot_astrophysical_contours(mach_r, R, Z, title="Radial Mach Number", 
+                               filename=f"mach_{step:05d}.png", 
+                               log_scale=False, cmap="coolwarm")
+    
+    # --- Specific angular momentum ---
+    l_spec = R * vphi
+    if np.any(np.abs(l_spec) > 1e-10):
+        plot_astrophysical_contours(l_spec, R, Z, title="Specific Angular Momentum", 
+                                   filename=f"angular_momentum_{step:05d}.png", 
+                                   log_scale=False, cmap="RdBu_r")
+    
+    # --- Multi-panel comparison (like in research papers) ---
+    if step % 50 == 0:  # Every 50th step
+        comparison_fields = {
+            'Density': rho,
+            'Temperature': T,
+            'Pressure': p,
+            'Radial Velocity': vr,
+            'Mach Number': mach_r,
+            'Sound Speed': cs
+        }
+        plot_comparative_contours(comparison_fields, R, Z, 
+                                filename=f"comparison_{step:05d}.png")
+    
+    # Summary statistics
+    print(f"Astrophysical data summary for step {step}:")
+    print(f"  Density range: [{np.min(rho):.2e}, {np.max(rho):.2e}]")
+    print(f"  Temperature range: [{np.min(T):.2e}, {np.max(T):.2e}] keV")
+    print(f"  Pressure range: [{np.min(p):.2e}, {np.max(p):.2e}]")
+    print(f"  Max radial velocity: {np.max(np.abs(vr)):.3f} c")
+    print(f"  Max Mach number: {np.max(mach_r):.3f}")
+
+def save_all(rho, p, e_total, R, Z, step=0):
+    """
+    Backward compatibility function - calls enhanced astrophysical version
+    """
+    # Create dummy velocity components if not provided
+    vphi = np.zeros_like(rho)
+    vr = np.zeros_like(rho)
+    vz = np.zeros_like(rho)
+    
+    save_all_enhanced(rho, p, e_total, vr, vz, vphi, R, Z, step)
 
 def plot_radial_profiles(fields_dict, R, Z, radii=[5, 10, 20, 30], filename="radial_profiles.png"):
     """
-    Plot radial profiles of various fields at different radii
+    Plot radial profiles at different radii (similar to paper analysis)
     """
     fig, axes = plt.subplots(2, 2, figsize=(15, 12))
     axes = axes.flatten()
@@ -175,14 +399,14 @@ def plot_radial_profiles(fields_dict, R, Z, radii=[5, 10, 20, 30], filename="rad
                 theta_sorted = theta_vals[sort_idx]
                 field_sorted = field_vals[sort_idx]
                 
-                ax.plot(theta_sorted * 180/np.pi, field_sorted, 
-                       'o-', color=colors[i % len(colors)], 
-                       label=f'r = {radius}', markersize=3, linewidth=1.5)
+                ax.semilogy(theta_sorted * 180/np.pi, np.abs(field_sorted), 
+                           'o-', color=colors[i % len(colors)], 
+                           label=f'r = {radius} r_g', markersize=3, linewidth=1.5)
         
-        ax.set_xlabel("Angle (degrees)")
-        ax.set_ylabel(field_name)
+        ax.set_xlabel("Polar Angle (degrees)")
+        ax.set_ylabel(f"|{field_name}|")
         ax.set_title(f"{field_name} vs Angle")
-        ax.legend()
+        ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3)
         
         plot_idx += 1
@@ -195,9 +419,9 @@ def plot_radial_profiles(fields_dict, R, Z, radii=[5, 10, 20, 30], filename="rad
     plt.savefig(os.path.join(OUTPUT_DIR, filename), dpi=150, bbox_inches='tight')
     plt.close()
 
-def plot_equatorial_profile(fields_dict,R, Z, filename="equatorial_profile.png"):
+def plot_equatorial_profile(fields_dict, R, Z, filename="equatorial_profile.png"):
     """
-    Plot profiles along the equatorial plane (z=0)
+    Plot profiles along the equatorial plane (z=0) - important for accretion disk physics
     """
     fig, axes = plt.subplots(2, 2, figsize=(15, 12))
     axes = axes.flatten()
@@ -214,11 +438,16 @@ def plot_equatorial_profile(fields_dict,R, Z, filename="equatorial_profile.png")
         ax = axes[plot_idx]
         field_vals = field_data[:, z_idx]
         
-        ax.semilogy(r_vals, np.abs(field_vals), 'o-', linewidth=2, markersize=4)
-        ax.set_xlabel("Radius r")
+        ax.loglog(r_vals, np.abs(field_vals), 'o-', linewidth=2, markersize=4)
+        ax.set_xlabel("Radius (r_g)")
         ax.set_ylabel(f"|{field_name}|")
-        ax.set_title(f"{field_name} along Equator")
-        ax.grid(True, alpha=0.3)
+        ax.set_title(f"{field_name} along Equatorial Plane")
+        ax.grid(True, alpha=0.3, which='both')
+        
+        # Mark important radii
+        ax.axvline(x=3, color='red', linestyle='--', alpha=0.7, label='r_ms = 3')
+        ax.axvline(x=6, color='orange', linestyle=':', alpha=0.7, label='r = 6')
+        ax.legend(fontsize=10)
         
         plot_idx += 1
     
@@ -230,133 +459,7 @@ def plot_equatorial_profile(fields_dict,R, Z, filename="equatorial_profile.png")
     plt.savefig(os.path.join(OUTPUT_DIR, filename), dpi=150, bbox_inches='tight')
     plt.close()
 
-def save_all_enhanced(rho, p, e_total, vr, vz, vphi, R, Z, step=0):
-    """
-    Enhanced saving with more fields and better visualization
-    """
-    print(f"\n--- Saving data for step {step} ---")
-    
-    # Basic thermodynamic quantities
-    plot_field_enhanced(rho, R, Z, title="Density", filename=f"density_{step:05d}.png", 
-                       log_scale=True, show_contours=True)
-    
-    plot_field_enhanced(p, R, Z, title="Pressure", filename=f"pressure_{step:05d}.png", 
-                       log_scale=True, show_contours=True)
-    
-    plot_field_enhanced(e_total, R, Z, title="Total Energy", filename=f"energy_{step:05d}.png", 
-                       log_scale=True)
-    
-    # Velocity components
-    plot_field_enhanced(vr, R, Z, title="Radial Velocity", cmap="RdBu_r", 
-                       filename=f"vr_{step:05d}.png")
-    
-    plot_field_enhanced(vz, R, Z, title="Vertical Velocity", cmap="RdBu_r", 
-                       filename=f"vz_{step:05d}.png")
-    
-    if np.any(np.abs(vphi) > 1e-10):
-        plot_field_enhanced(vphi, R, Z, title="Azimuthal Velocity", cmap="RdBu_r", 
-                           filename=f"vphi_{step:05d}.png")
-    
-    # Vector field visualization
-    plot_vector_field(vr, vz, R, Z, title="Velocity Field", 
-                     filename=f"velocity_field_{step:05d}.png", subsample=6)
-    
-    # Derived quantities
-    cs = np.sqrt(np.maximum(5.0/3.0 * p / (rho + 1e-20), 1e-20))  # Sound speed
-    mach_r = np.abs(vr) / cs  # Radial Mach number
-    v_total = np.sqrt(vr**2 + vz**2 + vphi**2)  # Total velocity magnitude
-    
-    plot_field_enhanced(cs, R, Z, title="Sound Speed", filename=f"cs_{step:05d}.png", 
-                       log_scale=True)
-    
-    plot_field_enhanced(mach_r, R, Z, title="Radial Mach Number", filename=f"mach_{step:05d}.png")
-    
-    plot_field_enhanced(v_total, R, Z, title="Velocity Magnitude", filename=f"vmag_{step:05d}.png")
-    
-    # Temperature (assuming ideal gas)
-    T = p / (rho + 1e-20)  # Temperature in code units
-    plot_field_enhanced(T, R, Z, title="Temperature", filename=f"temperature_{step:05d}.png", 
-                       log_scale=True)
-    
-    # Specific angular momentum
-    l_spec = R * vphi  # Specific angular momentum
-    if np.any(np.abs(l_spec) > 1e-10):
-        plot_field_enhanced(l_spec, R, Z, title="Specific Angular Momentum", 
-                           cmap="RdBu_r", filename=f"angular_momentum_{step:05d}.png")
-    
-    # Entropy (assuming ideal gas: s ∝ ln(p/ρ^γ))
-    gamma = 5.0/3.0
-    entropy = np.log(p / (rho**gamma + 1e-20))
-    plot_field_enhanced(entropy, R, Z, title="Entropy", cmap="viridis", 
-                       filename=f"entropy_{step:05d}.png")
-    
-    # Vorticity (curl of velocity in 2D: ∂vz/∂r - ∂vr/∂z)
-    if R.shape[0] > 2 and R.shape[1] > 2:
-        vorticity = np.zeros_like(vr)
-        dr = R[1, 0] - R[0, 0]
-        dz = Z[0, 1] - Z[0, 0]
-        
-        # Interior points
-        vorticity[1:-1, 1:-1] = ((vz[2:, 1:-1] - vz[:-2, 1:-1]) / (2 * dr) - 
-                                (vr[1:-1, 2:] - vr[1:-1, :-2]) / (2 * dz))
-        
-        if np.any(np.abs(vorticity) > 1e-10):
-            plot_field_enhanced(vorticity, R, Z, title="Vorticity", cmap="RdBu_r", 
-                               filename=f"vorticity_{step:05d}.png")
-    
-    # Velocity divergence (useful for identifying shocks)
-    div_v = np.zeros_like(vr)
-    dr = R[1, 0] - R[0, 0] if R.shape[0] > 1 else 1.0
-    dz = Z[0, 1] - Z[0, 0] if R.shape[1] > 1 else 1.0
-    
-    for i in range(1, R.shape[0]-1):
-        for j in range(1, R.shape[1]-1):
-            r_val = R[i, j]
-            if r_val > 1e-10:
-                # ∇·v = (1/r)∂(rvr)/∂r + ∂vz/∂z
-                dr_term = ((R[i+1, j] * vr[i+1, j] - R[i-1, j] * vr[i-1, j]) / 
-                          (2 * dr * r_val))
-                dz_term = (vz[i, j+1] - vz[i, j-1]) / (2 * dz)
-                div_v[i, j] = dr_term + dz_term
-    
-    if np.any(np.abs(div_v) > 1e-10):
-        plot_field_enhanced(div_v, R, Z, title="Velocity Divergence", cmap="RdBu_r", 
-                           filename=f"divergence_{step:05d}.png")
-    
-    # Radial profiles (only for significant steps)
-    if step % 50 == 0:  # Every 50th step
-        fields_for_profile = {
-            'Density': rho,
-            'Pressure': p,
-            'Radial Velocity': vr,
-            'Mach Number': mach_r
-        }
-        plot_radial_profiles(fields_for_profile, R, Z, 
-                           filename=f"radial_profiles_{step:05d}.png")
-        
-        plot_equatorial_profile(fields_for_profile, R, Z, 
-                              filename=f"equatorial_profile_{step:05d}.png")
-    
-    # Summary statistics
-    print(f"Data summary for step {step}:")
-    print(f"  Density: [{np.min(rho):.2e}, {np.max(rho):.2e}]")
-    print(f"  Pressure: [{np.min(p):.2e}, {np.max(p):.2e}]")
-    print(f"  |v_r| max: {np.max(np.abs(vr)):.3f}")
-    print(f"  |v_z| max: {np.max(np.abs(vz)):.3f}")
-    print(f"  Mach max: {np.max(mach_r):.3f}")
-    print(f"  Temperature range: [{np.min(T):.2e}, {np.max(T):.2e}]")
-
-def save_all(rho, p, e_total, R, Z, step=0):
-    """
-    Backward compatibility function - calls enhanced version
-    """
-    # Create dummy vphi if not provided (for backward compatibility)
-    vphi = np.zeros_like(rho)
-    vr = np.zeros_like(rho)  # Will need to be computed from momentum if available
-    vz = np.zeros_like(rho)
-    
-    save_all_enhanced(rho, p, e_total, vr, vz, vphi, R, Z, step)
-
+# Keep all other functions unchanged
 def create_animation(field_name="density", start_step=0, end_step=100, step_interval=10):
     """
     Create animation from saved images

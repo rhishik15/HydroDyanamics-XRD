@@ -1,5 +1,6 @@
 # tvd.py - Total Variation Diminishing limiters for shock capturing
 import numpy as np
+from config import params
 
 def minmod(a, b):
     """
@@ -103,7 +104,7 @@ def compute_gradients(field, dr, dz):
     
     return grad_r, grad_z
 
-def apply_slope_limiter(field, dr, dz, limiter='minmod'):
+def apply_slope_limiter(field, dr, dz, limiter='van_leer'):
     """
     Apply slope limiter to reduce oscillations near shocks
     """
@@ -280,11 +281,11 @@ def apply_tvd_limiters(rho, p, vr, vz, vphi, dr, dz, limiter='minmod', shock_thr
     
     # Velocity limiting (if needed)
     v_mag = np.sqrt(vr_limited**2 + vz_limited**2 + vphi_limited**2)
-    v_max_allowed = 0.3  # Maximum velocity limit
+    v_max = params.get("v_max", 0.6) # Maximum velocity limit
     
-    mask_fast = v_mag > v_max_allowed
+    mask_fast = v_mag > v_max
     if np.any(mask_fast):
-        scale = v_max_allowed / (v_mag[mask_fast] + 1e-20)
+        scale = v_max / (v_mag[mask_fast] + 1e-20)
         vr_limited[mask_fast] *= scale
         vz_limited[mask_fast] *= scale
         vphi_limited[mask_fast] *= scale

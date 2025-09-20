@@ -97,7 +97,7 @@ def compute_potential_and_forces():
     Compute gravitational potential and force components
     """
     # Softened radius to avoid singularity
-    softening = params.get("pw_softening", 0.5)
+    softening = params.get("pw_softening", 0.01)
     r_g = 2.0 * BH_mass  # Schwarzschild radius
     
     r_soft = np.maximum(Rg, softening)
@@ -152,7 +152,7 @@ def initialize_bondi_flow():
     
     print(f"Initial conditions: rho range [{np.min(rho):.2e}, {np.max(rho):.2e}]")
     print(f"Initial conditions: p range [{np.min(p):.2e}, {np.max(p):.2e}]")
-    print(f"Initial conditions: v_max = {np.max(np.sqrt(vr**2 + vz**2)):.3f}")
+    print(f"Initial conditions: v_max = {np.max(np.sqrt(vr**2 + vz**2+ vz**2)):.3f}")
     
     return rho, p, vr, vz, vphi, e_total
 
@@ -417,25 +417,74 @@ if __name__ == "__main__":
             print(f"Min/max pressure: {np.min(p):.2e} / {np.max(p):.2e}")
             break
         
-        # Monitor and save
-        if step % save_interval == 0:
-            save_all_enhanced(rho, p, e_total, vr, vz, vphi, R, Z, step=step)
+       # Monitor and save
+    if step % save_interval == 0:
+        save_all_enhanced(rho, p, e_total, vr, vz, vphi, R, Z, step=step)
+        
+        # Calculate physical quantities for monitoring
+        v_max_current = np.max(np.sqrt(vr**2 + vz**2 + vphi**2))
+        
+        # More accurate mass accretion rate calculation for cylindrical coordinates
+        # Integrate over spherical surfaces or use flux through boundaries
+        
+        # Method 1: Accretion rate through inner boundary (more accurate)
+        mask_inner = (np.sqrt(R**2 + Z**2) <= r_inner * 1.1)  # Slightly outside inner boundary
+        if np.any(mask_inner):
+            # Radial mass flux at inner boundary
+            r_sph = np.sqrt(R**2 + Z**2)[mask_inner]
+            rho_inner = rho[mask_inner]
+            vr_inner = vr[mask_inner]
+            vz_inner = vz[mask_inner]
             
-            v_max_current = np.max(np.sqrt(vr**2 + vz**2 + vphi**2))
-            mdot = np.sum(rho * vr * R * dr * dz) * 2 * np.pi  # Accretion rate
+            # Spherical radial velocity component
+            v_r_sph = (vr_inner * R[mask_inner] + vz_inner * Z[mask_inner]) / (r_sph + 1e-20)
             
-            print(f"Step {step:6d}, t = {t:.4f}, dt = {dt:.2e}, "
-                  f"max(ρ) = {np.max(rho):.2e}, max(v) = {v_max_current:.3f}, "
-                  f"Ṁ = {mdot:.2e}")
+            # Mass flux (negative for inflow)
+            mdot_inner = -np.sum(rho_inner * v_r_sph * r_sph**2) * (dr * dz / r_inner**2) * 4 * np.pi
+        else:
+            mdot_inner = 0.0
+        
+        # Method 2: Total inflow through domain (alternative measure)
+        mask_inflow = (vr < 0) & (np.sqrt(R**2 + Z**2) < R_max * 0.8)
+        mdot_total = -np.sum(rho[mask_inflow] * vr[mask_inflow] * np.abs(R[mask_inflow]) * dr * dz) * 2 * np.pi
+        
+        # Physical diagnostics
+        T_max = np.max(p / (rho + 1e-20))  # Maximum temperature
+        cs_max = np.sqrt(np.max(GAMMA * p / (rho + 1e-20)))  # Maximum sound speed
+        mach_max = v_max_current / (cs_max + 1e-20)  # Maximum Mach number
+        
+        # Bondi comparison (theoretical accretion rate)
+        mdot_bondi_theory = 4 * np.pi * BH_mass**2 * rho_inf / (cs_inf**3)
+        
+        # Energy diagnostics
+        kinetic_energy = np.sum(0.5 * rho * (vr**2 + vz**2 + vphi**2) * dr * dz)
+        internal_energy = np.sum(p / (GAMMA - 1.0) * dr * dz)
+        total_energy = kinetic_energy + internal_energy
+        
+        print(f"Step {step:6d}, t = {t:.4f}, dt = {dt:.2e}")
+        print(f"  Hydro: max(ρ) = {np.max(rho):.2e}, max(T) = {T_max:.2e}, max(v) = {v_max_current:.3f}")
+        print(f"  Flow:  Mach = {mach_max:.2f}, cs_max = {cs_max:.3f}")
+        print(f"  Accr:  Ṁ_inner = {mdot_inner:.2e}, Ṁ_total = {mdot_total:.2e}, Ṁ_Bondi = {mdot_bondi_theory:.2e}")
+        print(f"  Energy: KE = {kinetic_energy:.2e}, IE = {internal_energy:.2e}, Total = {total_energy:.2e}")
+        
+        # Stability warnings
+        if v_max_current > 0.8 * v_max:
+            print(f"  WARNING: Velocity approaching limit ({v_max_current:.3f} / {v_max})")
+        
+        if mach_max > 5.0:
+            print(f"  WARNING: High Mach number detected: {mach_max:.2f}")
+        
+        if np.any(rho <= rho_floor * 1.1):
+            n_floor = np.sum(rho <= rho_floor * 1.1)
+            print(f"  WARNING: {n_floor} cells at density floor")
+    
+    
         
         t += dt
         step += 1
         
         # Safety exit
-        if step > 100000:
-            print("Maximum steps reached")
-            break
-    
+        
     print(f"\nSimulation completed!")
     print(f"Final time: {t:.3f}")
     print(f"Total steps: {step}")

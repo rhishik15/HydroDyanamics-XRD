@@ -2,8 +2,8 @@
 
 params = {
     # --- Grid resolution & domain (reduced for stability) ---
-    "N_r": 900,           # reduced from 900 for initial testing
-    "N_z": 900,           # reduced from 900 for initial testing  
+    "N_r": 300,           # reduced from 900 for initial testing
+    "N_z": 300,           # reduced from 900 for initial testing  
     "R_max": 75.0,        # smaller domain for better resolution near BH
     "Z_max": 75.0,        # smaller domain for better resolution near BH
 
@@ -14,7 +14,7 @@ params = {
     "BH_mass": 1.0,       # black hole mass in code units
     
     # --- Potential softening (more conservative) ---
-    "pw_softening": 0.5,  # increased softening for stability
+    "pw_softening": 0.01,  # increased softening for stability
     "potential_cutoff": 2.0,  # minimum radius for potential calculation
 
     # --- Numerics (very conservative) ---
@@ -28,7 +28,7 @@ params = {
     "rho_floor": 1e-8,    # higher density floor
     "p_floor": 1e-10,     # higher pressure floor  
     "e_floor": 1e-12,     # energy floor
-    "v_max": 0.4,         # maximum allowed velocity (speed limiter)
+    "v_max": 1,         # maximum allowed velocity (speed limiter)
 
     # --- Bondi inflow parameters ---
     "use_bondi_outer_bc": True,
@@ -38,10 +38,10 @@ params = {
     "bondi_radius": None, # will be computed as GM/cs_inf^2
     
     # --- Sponge/damping zones ---
-    "sponge_inner_start": 3.0,   # inner sponge starts here
-    "sponge_inner_width": 2.0,   # inner sponge thickness
-    "sponge_outer_start": 5.0,  # outer sponge starts here
-    "sponge_outer_width": 1.0,   # outer sponge thickness
+    "sponge_inner_start": 0.0,   # inner sponge starts here
+    "sponge_inner_width": 0.0,   # inner sponge thickness
+    "sponge_outer_start": 0.0,  # outer sponge starts here
+    "sponge_outer_width": 0.0,   # outer sponge thickness
     "sponge_strength": 0.1,      # damping strength
     "sponge_mode": "linear",     # "linear" or "exponential"
     
