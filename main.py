@@ -435,205 +435,304 @@ def initialize_bondi_flow(R=None, Z=None, dr=None, dz=None):
 # ============================================================================
 
 
-def apply_boundary_conditions(rho, p, v_R, v_Z, vphi=0, dt=None, R=None, Z=None, dr=None, dz=None):
+
+
+
+
+# CORRECTED BOUNDARY CONDITIONS for main.py
+# Replace the apply_boundary_conditions function with this version
+
+
+def apply_boundary_conditions(rho, p, v_R, v_Z, vphi, e_total, dt=None, R=None, Z=None, dr=None, dz=None):
     """
-    FIXED: Boundary conditions with validated grids.
-    
-    Parameters:
-    -----------
-    rho, p, v_R, v_Z, vphi : ndarray
-        State arrays
-    dt : float, optional
-        Timestep
-    R, Z : ndarray, optional
-        Coordinate grids
-    dr, dz : float, optional
-        Grid spacings
-    
-    Returns:
-    --------
-    mass_accreted : float
-        Mass accreted through inner boundary
+    Physics- and numerics-aware boundary conditions.
+
+    Behavior:
+      - Inner accretion sink: removes mass inside a spherical accretion zone and
+        updates e_total (internal energy) conservatively.
+      - Gentle transition zone around the sink: blend pressure only, do NOT forcibly
+        zero velocities (uses outflow/extrapolation instead).
+      - Optional polar funnel: conservative small sink near axis (reduces axis pileup).
+      - Outer Bondi sponge: widened, smooth Hermite blend; pressure/density strongly
+        nudged, velocities only gently nudged.
+      - Axis regularity: enforce parity conditions and recompute e_total on axis.
+      - Floors & velocity limiter with consistent energy updates.
+      - Returns: mass_accreted (float)
     """
-    
-    # ✅ Build/validate grids matching state arrays
+    import numpy as np
+
+    # ---- build/validate local grids (must match rho shape) ----
     R_local, Z_local, dr_local, dz_local = validate_and_build_local_grids(
         rho, R=R, Z=Z, dr=dr, dz=dz,
-        R_max=params.get('R_max', 50.0), 
-        Z_max=params.get('Z_max', 50.0)
+        R_max=params.get('R_max', 75.0),
+        Z_max=params.get('Z_max', 75.0)
     )
-    
-    # Compute spherical radius using validated grids
+
+    Nr, Nz = rho.shape
     Rg = np.sqrt(R_local**2 + Z_local**2)
-    
-    # ✅ REGULARIZATION
     R_reg = 0.5 * dr_local
-    
+    gamma = params.get('gamma', params.get('GAMMA', 5.0/3.0))
+
     def hermite_smooth(x):
-        """Smooth interpolation: 0→1 with zero derivatives at ends"""
         x = np.clip(x, 0.0, 1.0)
         return 3.0 * x**2 - 2.0 * x**3
-    
+
     mass_accreted = 0.0
-    
-    # ================================================================
-    # 1. ✅ INNER BOUNDARY: Physical outflow + mass tracking
-    # ================================================================
-    
-    r_inner = params.get('r_inner', 3.0)
+
+    # --------------------
+    # 1) INNER ACCRETION SINK (conservative)
+    # --------------------
+    # spherical boundary parameters (user-configurable)
+    r_inner = params.get('r_inner', 3.0)        # nominal inner radius (in code units)
     z_inner = params.get('z_inner', 3.0)
-    
-    # Hard boundary: Matter inside has been accreted
-    f_hard = 0.98
-    r_hard = f_hard * np.sqrt(r_inner**2 + z_inner**2)
-    
-    # Soft transition zone
-    f_soft = 1.05
-    r_soft = f_soft * np.sqrt(r_inner**2 + z_inner**2)
-    
-    # ✅ ACCRETE MASS: Track what flows through boundary
-    mask_hard = Rg < r_hard
-    if np.any(mask_hard):
-        # Compute volume elements
-        vol_elements = 2.0 * np.pi * np.maximum(R_local[mask_hard], R_reg) * dr_local * dz_local
-        
-        # Physical mass (above floor)
+    r_boundary = np.sqrt(r_inner**2 + z_inner**2)
+
+    # accretion zone: hard interior (where mass removed) and soft transition outside
+    r_accrete = params.get('r_accrete_factor', 0.95) * r_boundary
+    r_transition = params.get('r_transition_factor', 1.10) * r_boundary
+
+    # ensure not inverted
+    if r_transition <= r_accrete:
+        r_transition = r_accrete * 1.05
+
+    mask_accrete = Rg < r_accrete
+
+    if np.any(mask_accrete):
+        # compute volume elements (cylindrical cell area times dtheta=2pi)
+        cell_area = 2.0 * np.pi * np.maximum(R_local[mask_accrete], R_reg) * dr_local
+        vol = cell_area * dz_local  # volume per cell (assuming unit theta integration)
+
+        # compute physical mass above floor and sum
         rho_floor = params.get('rho_floor', 1e-8)
-        physical_mass = np.maximum(rho[mask_hard] - rho_floor, 0.0) * vol_elements
-        mass_accreted = float(np.sum(physical_mass))
-        
-        if not np.isfinite(mass_accreted):
-            mass_accreted = 0.0
-        
-        # ✅ REMOVE ACCRETED MATTER: Set to floor
-        rho[mask_hard] = rho_floor
-        p[mask_hard] = params.get('p_floor', 1e-10)
-        v_R[mask_hard] = 0.0
-        v_Z[mask_hard] = 0.0
-        
+        mass_cell = np.maximum(rho[mask_accrete] - rho_floor, 0.0) * vol
+        total_mass = float(np.sum(mass_cell))
+        if not np.isfinite(total_mass):
+            total_mass = 0.0
+
+        mass_accreted = total_mass
+
+        # remove mass: set density to floor
+        rho[mask_accrete] = rho_floor
+        p[mask_accrete] = params.get('p_floor', 1e-10)
+
+        # zero momenta inside sink (conservative removal)
+        v_R[mask_accrete] = 0.0
+        v_Z[mask_accrete] = 0.0
         if isinstance(vphi, np.ndarray):
-            vphi[mask_hard] = 0.0
-    
-    # ✅ SMOOTH TRANSITION: Damp velocities gradually
-    mask_soft = (Rg >= r_hard) & (Rg <= r_soft)
-    if np.any(mask_soft):
-        xi = (Rg[mask_soft] - r_hard) / (r_soft - r_hard)
-        w = hermite_smooth(xi)  # 0 at r_hard, 1 at r_soft
-        
-        v_R[mask_soft] *= w
-        v_Z[mask_soft] *= w
-        
-        if isinstance(vphi, np.ndarray):
-            vphi[mask_soft] *= w
-    
-    # ================================================================
-    # 2. ✅ OUTER BOUNDARY: Bondi solution sponge
-    # ================================================================
-    
+            vphi[mask_accrete] = 0.0
+
+        # update e_total to internal-only (kinetic -> removed)
+        e_total[mask_accrete] = p[mask_accrete] / (gamma - 1.0)
+
+    # --------------------
+    # 2) INNER TRANSITION (gentle): blend pressure only, do not forcibly kill velocity
+    # --------------------
+    mask_transition = (Rg >= r_accrete) & (Rg < r_transition)
+    if np.any(mask_transition):
+        xi = (Rg[mask_transition] - r_accrete) / (r_transition - r_accrete)
+        w = hermite_smooth(xi)  # 0 @ inner, 1 @ outer transition
+
+        # choose a small reference region just inside transition to sample "interior" pressure
+        r_ref = 0.5 * (r_accrete + r_transition)
+        mask_ref = (Rg >= (r_ref - 0.5 * dr_local)) & (Rg <= (r_ref + 0.5 * dr_local))
+        if np.any(mask_ref):
+            p_ref = np.median(p[mask_ref])
+        else:
+            p_ref = np.median(p[mask_transition])
+
+        # Only blend pressure (keep velocities natural)
+        p[mask_transition] = (1.0 - w) * p[mask_transition] + w * p_ref
+
+        # Update e_total for transition cells: kinetic unchanged, internal from blended p
+        kinetic = 0.5 * rho[mask_transition] * (
+            v_R[mask_transition]**2 + v_Z[mask_transition]**2 +
+            (vphi[mask_transition]**2 if isinstance(vphi, np.ndarray) else 0.0)
+        )
+        internal = p[mask_transition] / (gamma - 1.0)
+        e_total[mask_transition] = kinetic + internal
+
+    # --------------------
+    # 3) POLAR FUNNEL SINK (optional, conservative axis funnel)
+    #    This removes a tiny fraction of mass/energy within a narrow cone near axis.
+    #    Tunable via params:
+    #      funnel_enable (bool), funnel_angle_deg, funnel_z_max, funnel_rate
+    # --------------------
+    if params.get('funnel_enable', True):
+        funnel_angle = np.deg2rad(params.get('funnel_angle_deg', 5.0))   # radians
+        funnel_z_max = params.get('funnel_z_max', 0.5 * params.get('Z_max', 75.0))
+        funnel_rate = params.get('funnel_rate', 1e-3)  # per unit time
+
+        # Funnel mask: narrow cone about axis (R/Z < tan(angle)) and limited z-range
+        small = 1e-12
+        mask_funnel = (Z_local > 0.0) & (Z_local <= funnel_z_max) & ((R_local / (Z_local + small)) < np.tan(funnel_angle))
+
+        if np.any(mask_funnel) and (dt is not None) and (funnel_rate > 0.0):
+            # fraction removed this time step (stable exponential form)
+            frac = 1.0 - np.exp(-funnel_rate * dt)
+            # ensure frac small
+            frac = np.clip(frac, 0.0, 0.5)
+
+            # remove mass and corresponding energy/kinetic proportionally
+            dmass = rho[mask_funnel] * frac
+            # remove mass
+            rho[mask_funnel] -= dmass
+            # proportionally reduce momentum (scale velocities)
+            scale = np.maximum((rho[mask_funnel] + 1e-20) / (rho[mask_funnel] + dmass + 1e-20), 0.0)
+            v_R[mask_funnel] *= scale
+            v_Z[mask_funnel] *= scale
+            if isinstance(vphi, np.ndarray):
+                vphi[mask_funnel] *= scale
+
+            # remove corresponding internal energy from e_total (assume same specific internal energy)
+            # compute specific internal energy (per mass) before removal:
+            specific_internal = (e_total[mask_funnel] - 0.5 * (rho[mask_funnel] * (v_R[mask_funnel]**2 + v_Z[mask_funnel]**2 + (vphi[mask_funnel]**2 if isinstance(vphi, np.ndarray) else 0.0))) ) / (rho[mask_funnel] + 1e-20)
+            # remove internal energy associated with removed mass
+            dE_internal = specific_internal * dmass
+            e_total[mask_funnel] = np.maximum(e_total[mask_funnel] - dE_internal, params.get('e_floor', 1e-12))
+
+            # keep rho positive
+            rho[mask_funnel] = np.maximum(rho[mask_funnel], params.get('rho_floor', 1e-8))
+            # recompute p from internal energy
+            internal = np.maximum((e_total[mask_funnel] - 0.5 * rho[mask_funnel] * (
+                v_R[mask_funnel]**2 + v_Z[mask_funnel]**2 + (vphi[mask_funnel]**2 if isinstance(vphi, np.ndarray) else 0.0)
+            )), params.get('e_floor', 1e-12))
+            p[mask_funnel] = np.maximum((gamma - 1.0) * internal, params.get('p_floor', 1e-10))
+
+    # --------------------
+    # 4) OUTER BONDI SPONGE (widened + gentle velocity nudging)
+    # --------------------
     r_sponge_start = params.get("r_outer", 60.0)
     r_sponge_width = params.get("sponge_width", 15.0)
-    
-    # ✅ Compute Bondi solution using same grids
+    # make sure width not tiny
+    r_sponge_width = max(r_sponge_width, 3.0 * dr_local)
+
     rho_b, p_b, vR_b, vZ_b, vphi_b = bondi_solution_cylindrical(R_local, Z_local, dr=dr_local)
-    
-    # Sponge weight
+
     xi_sponge = (Rg - r_sponge_start) / r_sponge_width
     xi_sponge = np.clip(xi_sponge, 0.0, 1.0)
     w_sponge = hermite_smooth(xi_sponge)
-    
-    # ✅ BLEND WITH BONDI (smooth forcing, not hard BC)
+
+    # Strongly nudge density & pressure; gently nudge velocities to avoid waves
     rho[:] = (1.0 - w_sponge) * rho + w_sponge * rho_b
     p[:] = (1.0 - w_sponge) * p + w_sponge * p_b
-    v_R[:] = (1.0 - w_sponge) * v_R + w_sponge * vR_b
-    v_Z[:] = (1.0 - w_sponge) * v_Z + w_sponge * vZ_b
-    
+
+    vel_nudge = params.get('sponge_vel_nudge', 0.2)  # fraction to nudge velocities
+    v_R[:] = (1.0 - vel_nudge * w_sponge) * v_R + (vel_nudge * w_sponge) * vR_b
+    v_Z[:] = (1.0 - vel_nudge * w_sponge) * v_Z + (vel_nudge * w_sponge) * vZ_b
     if isinstance(vphi, np.ndarray):
-        vphi[:] = (1.0 - w_sponge) * vphi + w_sponge * vphi_b
-    
-    # ================================================================
-    # 3. ✅ AXIS REGULARITY: Proper reflection symmetry
-    # ================================================================
-    
+        vphi[:] = (1.0 - vel_nudge * w_sponge) * vphi + (vel_nudge * w_sponge) * vphi_b
+
+    # recompute e_total in the sponge zone (consistent)
+    kinetic = 0.5 * rho * (v_R**2 + v_Z**2 + (vphi**2 if isinstance(vphi, np.ndarray) else 0.0))
+    internal = p / (gamma - 1.0)
+    e_total[:] = kinetic + internal
+
+    # --------------------
+    # 5) AXIS REGULARITY (i=0)
+    #    enforce parity: rho,p even; v_R odd (zero), v_Z even, vphi zero
+    # --------------------
     i_axis = 0
-    
-    # Scalars: Even parity (∂/∂R = 0)
-    rho[i_axis, :] = rho[1, :]
-    p[i_axis, :] = p[1, :]
-    v_Z[i_axis, :] = v_Z[1, :]
-    
-    # Radial velocity: Odd parity (v_R = 0 at axis)
-    v_R[i_axis, :] = 0.0
-    
-    # Azimuthal velocity: Must vanish at axis
-    if isinstance(vphi, np.ndarray):
-        vphi[i_axis, :] = 0.0
-    
-    # ================================================================
-    # 4. ✅ Z-BOUNDARY: Natural BC (set to Bondi)
-    # ================================================================
-    
+    if Nr > 1:
+        rho[i_axis, :] = rho[1, :].copy()
+        p[i_axis, :] = p[1, :].copy()
+        v_Z[i_axis, :] = v_Z[1, :].copy()
+        v_R[i_axis, :] = 0.0
+        if isinstance(vphi, np.ndarray):
+            vphi[i_axis, :] = 0.0
+
+        kinetic_axis = 0.5 * rho[i_axis, :] * (v_R[i_axis, :]**2 + v_Z[i_axis, :]**2 + (vphi[i_axis, :]**2 if isinstance(vphi, np.ndarray) else 0.0))
+        internal_axis = p[i_axis, :] / (gamma - 1.0)
+        e_total[i_axis, :] = kinetic_axis + internal_axis
+
+    # --------------------
+    # 6) Z-bottom boundary (enforce analytic Bondi at bottom row)
+    # --------------------
+    # use bondi solution for bottom row to anchor flow
     j_bottom = 0
     rho[:, j_bottom] = rho_b[:, j_bottom]
     p[:, j_bottom] = p_b[:, j_bottom]
     v_R[:, j_bottom] = vR_b[:, j_bottom]
     v_Z[:, j_bottom] = vZ_b[:, j_bottom]
-    
     if isinstance(vphi, np.ndarray):
         vphi[:, j_bottom] = vphi_b[:, j_bottom]
-    
-    # ================================================================
-    # 5. FLOORS
-    # ================================================================
-    
+
+    kinetic_z = 0.5 * rho[:, j_bottom] * (v_R[:, j_bottom]**2 + v_Z[:, j_bottom]**2 + (vphi[:, j_bottom]**2 if isinstance(vphi, np.ndarray) else 0.0))
+    internal_z = p[:, j_bottom] / (gamma - 1.0)
+    e_total[:, j_bottom] = kinetic_z + internal_z
+
+    # corner handling (R=0,Z=0)
+    if Nr > 1 and Nz > 1:
+        rho[0, 0] = np.mean([rho[0, 1], rho[1, 0], rho[1, 1]])
+        p[0, 0] = np.mean([p[0, 1], p[1, 0], p[1, 1]])
+        v_R[0, 0] = 0.0
+        v_Z[0, 0] = 0.5 * v_Z[0, 1]
+        if isinstance(vphi, np.ndarray):
+            vphi[0, 0] = 0.0
+        kinetic_corner = 0.5 * rho[0, 0] * v_Z[0, 0]**2
+        internal_corner = p[0, 0] / (gamma - 1.0)
+        e_total[0, 0] = kinetic_corner + internal_corner
+
+    # --------------------
+    # 7) FLOORS (density, pressure) and recompute energy
+    # --------------------
     rho[:] = np.maximum(rho, params.get('rho_floor', 1e-8))
     p[:] = np.maximum(p, params.get('p_floor', 1e-10))
-    
-    # ================================================================
-    # 6. VELOCITY LIMITER
-    # ================================================================
-    
+
+    kinetic_final = 0.5 * rho * (v_R**2 + v_Z**2 + (vphi**2 if isinstance(vphi, np.ndarray) else 0.0))
+    internal_final = p / (gamma - 1.0)
+    e_total[:] = kinetic_final + internal_final
+
+    # --------------------
+    # 8) VELOCITY LIMITER (global), then energy update for clipped cells
+    # --------------------
     v_max_local = params.get('v_max', 0.95)
-    
     if isinstance(vphi, np.ndarray):
         v_mag = np.sqrt(v_R**2 + v_Z**2 + vphi**2)
     else:
         v_mag = np.sqrt(v_R**2 + v_Z**2)
-    
+
     mask_fast = v_mag > v_max_local
-    
     if np.any(mask_fast):
         scale = v_max_local / (v_mag[mask_fast] + 1e-20)
         v_R[mask_fast] *= scale
         v_Z[mask_fast] *= scale
-        
         if isinstance(vphi, np.ndarray):
             vphi[mask_fast] *= scale
-    
-    # ================================================================
-    # 7. SAFETY: NaN/Inf check
-    # ================================================================
-    
-    bad = ~np.isfinite(rho) | ~np.isfinite(p) | \
-          ~np.isfinite(v_R) | ~np.isfinite(v_Z)
-    
+
+        # update e_total for those cells
+        kinetic_limited = 0.5 * rho[mask_fast] * v_max_local**2
+        internal_limited = p[mask_fast] / (gamma - 1.0)
+        e_total[mask_fast] = kinetic_limited + internal_limited
+
+    # --------------------
+    # 9) SAFETY: NaN/Inf check & repair
+    # --------------------
+    bad = ~np.isfinite(rho) | ~np.isfinite(p) | ~np.isfinite(v_R) | ~np.isfinite(v_Z) | ~np.isfinite(e_total)
     if isinstance(vphi, np.ndarray):
         bad |= ~np.isfinite(vphi)
-    
+
     if np.any(bad):
-        n_bad = np.sum(bad)
-        print(f"  WARNING: {n_bad} bad cells - resetting to floor")
-        
+        n_bad = int(np.sum(bad))
+        print(f"[apply_bc] WARNING: {n_bad} bad cells detected; resetting to floors")
         rho[bad] = params.get('rho_floor', 1e-8)
         p[bad] = params.get('p_floor', 1e-10)
         v_R[bad] = 0.0
         v_Z[bad] = 0.0
-        
         if isinstance(vphi, np.ndarray):
             vphi[bad] = 0.0
-    
-    return mass_accreted
+        e_total[bad] = p[bad] / (gamma - 1.0)
 
-# ============================================================================
+    # final sanity: energy positivity
+    if np.any(e_total < params.get('e_floor', 1e-12)):
+        mask = e_total < params.get('e_floor', 1e-12)
+        e_total[mask] = params.get('e_floor', 1e-12)
+        # push pressure accordingly if needed
+        p[mask] = np.maximum(p[mask], (gamma - 1.0) * (e_total[mask] - 0.5 * rho[mask] * (v_R[mask]**2 + v_Z[mask]**2 + (vphi[mask]**2 if isinstance(vphi, np.ndarray) else 0.0))))
+
+    # Diagnostics (lightweight)
+    # print(f"[apply_bc] mass_accreted = {mass_accreted:.3e}")
+
+    return float(mass_accreted)
 # TIMESTEP (UNCHANGED)
 # ============================================================================
 
@@ -788,7 +887,9 @@ if __name__ == "__main__":
     print(f"Force Z range: [{np.min(F_z):.2e}, {np.max(F_z):.2e}]")
     
     # Apply initial BCs
-    acc = apply_boundary_conditions(rho, p, vr, vz, vphi, dt=0.0, R=R, Z=Z, dr=dr, dz=dz)
+    acc = apply_boundary_conditions(rho, p, vr, vz, vphi, e_total,  # <-- ADD e_total here
+        dt=0.0, R=R, Z=Z, dr=dr, dz=dz
+    )
     cumulative_accreted_mass += acc
     
     # Recompute energy
@@ -810,7 +911,7 @@ if __name__ == "__main__":
     while t < t_end:
         # Compute timestep
         dt = compute_timestep(rho, p, vr, vz, vphi,dr = dr , dz=dz)
-        
+        dt = max(dt, params['dt_min'])
         if t + dt > t_end:
             dt = t_end - t
         
@@ -851,18 +952,13 @@ if __name__ == "__main__":
         
         # Apply BCs
         acc_half = apply_boundary_conditions(
-            rho_half, p_half, vr_half, vz_half, vphi_half, dt=0.5*dt,
-            R=R, Z=Z, dr=dr, dz=dz
-        )
+            rho_half, p_half, vr_half, vz_half, vphi_half, e_half,  # <-- ADD e_half here
+            dt=0.5*dt, R=R, Z=Z, dr=dr, dz=dz
+        )  
         
         if not np.isfinite(acc_half):
             acc_half = 0.0
-        
-        # Recompute conservative variables after BCs
-        kinetic_half = 0.5 * rho_half * (vr_half**2 + vz_half**2 + vphi_half**2)
-        internal_half = p_half / (GAMMA - 1.0)
-        e_half = kinetic_half + internal_half
-        
+       
         U1_half = rho_half
         U2_half = rho_half * vr_half
         U3_half = rho_half * vz_half
@@ -884,7 +980,7 @@ if __name__ == "__main__":
         k2_U1 = dU1_dt2 + S1_half
         k2_U2 = dU2_dt2 + S2_half
         k2_U3 = dU3_dt2 + S3_half
-        k2_U4 = dU3_dt2 + S4_half
+        k2_U4 = dU4_dt2 + S4_half
         k2_U5 = dU5_dt2 + S5_half
         
         # ====================================================================
@@ -917,8 +1013,10 @@ if __name__ == "__main__":
         # FINAL BOUNDARY CONDITIONS
         # ====================================================================
         
-        acc_full = apply_boundary_conditions(rho, p, vr, vz, vphi, dt=dt,
-                                            R=R, Z=Z, dr=dr, dz=dz)
+        acc_full = apply_boundary_conditions(
+            rho, p, vr, vz, vphi, e_total,  # <-- ADD e_total here
+            dt=dt, R=R, Z=Z, dr=dr, dz=dz
+        )                                 
         
         if not np.isfinite(acc_full):
             acc_full = 0.0

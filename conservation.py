@@ -364,84 +364,90 @@ def compute_fluxes(rho, p, vr, vz, vphi, R, dr, dz):
 
 def compute_source_terms(rho, vr, vz, vphi, F_r, F_z, R, p, dr, dz):
     """
-    Compute source terms for hydrodynamic conservation equations
-    in axisymmetric cylindrical coordinates.
-
-    Includes:
-      - gravitational forces (S2, S3)
-      - centrifugal + geometric energy sources
-      - gravitational work on energy
-      - axis-regularized conservative patch at r = 0
+    Compute source terms with PROPER axis treatment (only i=0)
     """
     Nr, Nz = rho.shape
-
-    # ✅ SHAPE VALIDATION
+    
     assert_consistent_shapes(rho, vr, vz, vphi, F_r, F_z, p,
                              context="compute_source_terms")
-
-    # ✅ BUILD/VALIDATE LOCAL GRIDS
+    
     R_local, Z_local, dr_local, dz_local = validate_and_build_local_grids(
         rho, R=R, dr=dr, dz=dz,
         R_max=params.get("R_max"),
         Z_max=params.get("Z_max"),
     )
-
-    # ✅ CONSISTENT REGULARIZATION
+    
     R_reg = 0.5 * dr_local
     gamma = params.get("gamma", 5.0 / 3.0)
-
-    # Allocate source arrays
-    S1 = np.zeros_like(rho)  # mass
+    
+    # Initialize source arrays
+    S1 = np.zeros_like(rho)  # mass (should be zero)
     S2 = np.zeros_like(rho)  # radial momentum
     S3 = np.zeros_like(rho)  # axial momentum
     S4 = np.zeros_like(rho)  # azimuthal momentum
     S5 = np.zeros_like(rho)  # energy
-
+    
     # ------------------------------------------------------------------
-    # Gravitational forces
+    # Gravitational forces (all cells)
     # ------------------------------------------------------------------
     S2[:, :] = rho * F_r
     S3[:, :] = rho * F_z
-
+    
     # ------------------------------------------------------------------
     # Geometric + centrifugal + energy source terms
     # ------------------------------------------------------------------
-    for i in range(1, Nr - 1):
+    for i in range(1, Nr - 1):  # ✅ Start from i=1, not i=0
         for j in range(Nz):
             r_safe = np.sqrt(R_local[i, j] ** 2 + R_reg ** 2)
-
-            # Centrifugal force term: +ρ vφ² / r
+            
+            # Centrifugal force: +ρ v_φ² / r
             S2[i, j] += rho[i, j] * vphi[i, j] ** 2 / r_safe
-
+            
             # Energy geometric term: (E + p) v_r / r
             kinetic_density = 0.5 * rho[i, j] * (
                 vr[i, j] ** 2 + vz[i, j] ** 2 + vphi[i, j] ** 2
             )
             internal_density = p[i, j] / (gamma - 1.0)
             E_total = kinetic_density + internal_density
-
+            
             S5[i, j] += (E_total + p[i, j]) * vr[i, j] / r_safe
-
+    
     # ------------------------------------------------------------------
-    # Gravitational work term (ρ v · F)
+    # Gravitational work term (all cells)
     # ------------------------------------------------------------------
     S5[:, :] += rho * (vr * F_r + vz * F_z)
-
+    
     # ------------------------------------------------------------------
-    # Axis treatment (Option 1 conservative patch)
+    # ✅ CORRECTED AXIS TREATMENT (ONLY i=0)
     # ------------------------------------------------------------------
-    # Even quantities: copy from first interior cell
-    S1[0, :] = S1[1, :].copy()  # mass
-    S3[0, :] = S3[1, :].copy()  # z-momentum
-    S5[0, :] = S5[1, :].copy()  # energy
-
-    # Odd quantities (symmetry requires zero)
-    # Keep gravitational contribution in S2, but remove centrifugal term
-    S2[0, :] = rho[0, :] * F_r[0, :]
-    S4[0, :] = 0.0
-
+    # Physical constraint at R=0: axisymmetric flow requires:
+    # - Even parity: ρ, p, v_z (symmetric across axis)
+    # - Odd parity: v_r, v_φ (antisymmetric, hence zero at axis)
+    
+    i_axis = 0
+    
+    # Even quantities: Use local values (NOT copied from i=1)
+    # They naturally have zero radial derivative at axis
+    S1[i_axis, :] = 0.0  # Mass conservation has no source
+    S3[i_axis, :] = rho[i_axis, :] * F_z[i_axis, :]  # Z-momentum: keep gravity
+    
+    # Energy: Use regularized radius for geometric term
+    r_axis = np.sqrt(R_local[i_axis, :]**2 + R_reg**2)
+    
+    kinetic_axis = 0.5 * rho[i_axis, :] * vz[i_axis, :]**2  # Only v_z survives
+    internal_axis = p[i_axis, :] / (gamma - 1.0)
+    E_axis = kinetic_axis + internal_axis
+    
+    # Geometric term with regularization (vr→0 at axis, so this→0)
+    S5[i_axis, :] = (E_axis + p[i_axis, :]) * vr[i_axis, :] / r_axis + \
+                    rho[i_axis, :] * (vr[i_axis, :] * F_r[i_axis, :] + 
+                                     vz[i_axis, :] * F_z[i_axis, :])
+    
+    # Odd quantities: MUST be zero at axis (physical constraint)
+    S2[i_axis, :] = rho[i_axis, :] * F_r[i_axis, :]  # Keep gravity, but vr→0 makes centrifugal→0
+    S4[i_axis, :] = 0.0  # No azimuthal sources at axis
+    
     return S1, S2, S3, S4, S5
-
 
 # ============================================================================
 # TIMESTEP CONSTRAINT (keep original)
